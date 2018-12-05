@@ -3,6 +3,8 @@ title: "final_project"
 author: "Nathan Hepler"
 date: "12/01/2018"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
@@ -20,6 +22,8 @@ library(zoo)
 library(forcats)
 library(ggthemes)
 library(knitr)
+library(agricolae)
+library(stringr)
 
 ## set working directory
 knitr::opts_knit$set(root.dir = '/cloud/project')
@@ -50,8 +54,8 @@ Use the first approach explained above to download and access the ATUS data for 
 ### Importing data
 
 ```{r atus-data, warning=FALSE}
-atus.cps <- read.delim('data/raw_data/atuscps_2016.dat', sep=",")
-atus.sum <- read.delim('data/raw_data/atussum_2016.dat', sep=",")
+atus.cps <- read.delim('final_project/data/raw_data/atuscps_2016.dat', sep=",")
+atus.sum <- read.delim('final_project/data/raw_data/atussum_2016.dat', sep=",")
 atus.all <- atus.sum %>%
   left_join(atus.cps %>% filter(TULINENO==1), by = c("TUCASEID"))
 ```
@@ -60,38 +64,167 @@ atus.all <- atus.sum %>%
 
 ```{r initial-exploration}
 ### Add Code Here
+socializing <- atus.all %>% 
+  select(t120101)
+
+mean(socializing$t120101)
 ```
 
 
 ```{r creating-childcare-var}
+## columns with activity code starting with t0301 are all associated with “Caring For & Helping HH Children”.
+## we want to sum those up to generate a column containing time spent collectively on 'CHILDCARE'
+## use rowSums function alongside grep to:
+##    1. Find all columns containing 't0301' (grep)
+##    2. Sum up the total rows so that the # of obs. is consistent with 
+##       dataset as a whole
 atus.all <- atus.all %>% 
-    mutate(CHILDCARE = )
+    mutate(CHILDCARE = rowSums(.[, grep('t0301', colnames(.))]))
 ```
 
 ```{r childcare-density-plot}
-ggplot(atus.all) +
-    geom_density()
+ggplot(atus.all, aes(CHILDCARE)) +
+    geom_density() + 
+  labs(title='Average time spent on childcare',
+       subtitle='American Time Use Survey (2016)',
+       caption='Source: Bureau of Labor Statistics (BLS)') + 
+  xlab(label='Minutes')
 ```
 
 ```{r gender-analysis}
 atus.all %>% 
-    group_by() %>% 
-    FUNCTION()
+    group_by(TESEX) %>% 
+    summarise(n=mean(CHILDCARE))
 ```
 
 ```{r replacing-na}
 ## replace -1 in the variable TRDPFTPT with NA.
+
+## first way i thought of: 
+## new <- function(column){
+##  for(val in 1:length(column)){
+##    if(column[val] == -1){
+##      column[val] = 'NA'
+##    }
+##  }
+##  return(column)
+##}
+##NAs <- new(atus.all$TRDPFTPT)
+##atus.all$TRDPFTPT <- NAs
+
+## easier way:
+atus.all$TRDPFTPT <- sub(-1, 'NA', atus.all$TRDPFTPT)
 ```
 
 ```{r exploratory-analysis}
 ## add your exploratory analysis code here
+## all filtered to make sure HAVE CHILDREN (TRCHILDNUM > 0)
+
+## age v childcare time
+atus.all %>% 
+  filter(TRCHILDNUM > 0) %>% 
+  select(TEAGE, CHILDCARE) %>% 
+  arrange(TEAGE) %>% 
+  filter(TEAGE > -1) %>% 
+  ggplot(aes(x=as.numeric(TEAGE), y=CHILDCARE)) + 
+  geom_point() + 
+  ylab(label='Time spent on childcare (minutes)') + 
+  xlab(label='Age of parent (years)') + 
+  labs(title='Relationship between parent age and childcare',
+       subtitle='\tSee more of a bell curve, with a general peak in mid-30s')
+
+## pay v childcare time
+
+## running stats
+pay.aov <- aov(CHILDCARE~as.character(HEFAMINC), data=atus.all %>%
+                 filter(TRCHILDNUM > 0))
+pay.HSD <- HSD.test(pay.aov, trt='as.character(HEFAMINC)', alpha=0.05)
+
+## plotting
+atus.all %>% 
+  filter(TRCHILDNUM > 0) %>% 
+  select(HEFAMINC, CHILDCARE) %>% 
+  arrange(HEFAMINC) %>%
+  ggplot(aes(x=HEFAMINC, y=CHILDCARE)) + 
+  geom_boxplot(aes(group=HEFAMINC)) + 
+  ylab(label='Time spent on childcare (minutes)') + 
+  xlab(label='Household salary') + 
+  labs(title='Relationship between income and childcare',
+       subtitle='\tNo clear relationship observed')
+
+## marital status v childcare
+## converting numbers to text
+atus.all$PEMARITL <- sub(1, 'Married - spouse present', atus.all$PEMARITL)
+atus.all$PEMARITL <- sub(2, 'Married - spouse absent', atus.all$PEMARITL)
+atus.all$PEMARITL <- sub(3, 'Widowed', atus.all$PEMARITL)
+atus.all$PEMARITL <- sub(4, 'Divorced', atus.all$PEMARITL)
+atus.all$PEMARITL <- sub(5, 'Separated', atus.all$PEMARITL)
+atus.all$PEMARITL <- sub(6, 'Never married', atus.all$PEMARITL)
+
+## running stats
+mar.aov <- aov(CHILDCARE~PEMARITL, data=atus.all %>%
+                 filter(TRCHILDNUM > 0))
+mar.HSD <- HSD.test(mar.aov, trt='PEMARITL', alpha=0.05)
+
+## plotting as table, including a column for stats
+atus.all %>% 
+  filter(TRCHILDNUM > 0) %>% 
+  select(Status=PEMARITL, CHILDCARE) %>% 
+  group_by(Status) %>% 
+  summarise(Average=mean(CHILDCARE), SD=sd(CHILDCARE)) %>% 
+  arrange(desc(Average)) %>% 
+  mutate(ANOVA=mar.HSD$groups[,2]) %>% 
+  kable(digits=2, format='pandoc', align='rccc', caption='Average time spent on childcare by marital status')
+
+
+## fulltime v partime and childcare
+## converting numbers to labels
+atus.all$TRDPFTPT <- sub(1, 'Full time', atus.all$TRDPFTPT)
+atus.all$TRDPFTPT <- sub(2, 'Part time', atus.all$TRDPFTPT)
+
+## doing stats
+job.test <- t.test(CHILDCARE~TRDPFTPT, data=atus.all %>% 
+                 filter(TRCHILDNUM > 0, TRDPFTPT == 'Full time' | 
+                          TRDPFTPT == 'Part time'))
+
+## plotting
+atus.all %>% 
+  filter(TRCHILDNUM > 0, TRDPFTPT == 'Full time' | TRDPFTPT == 'Part time') %>% 
+  select(Status=TRDPFTPT, CHILDCARE) %>% 
+  group_by(Status) %>% 
+  summarise(Average=mean(CHILDCARE), SD=sd(CHILDCARE)) %>% 
+  kable(digits=2, format='pandoc', align = 'rcc', caption=paste0('Average time spent on childcare by employmeent status.\np-value: ', signif(job.test$p.value, digits=3)))
+
+
+## sex v childcare
+## doing stats
+sex.test <- t.test(CHILDCARE~as.character(TESEX), data=atus.all %>% 
+                 filter(TRCHILDNUM > 0))
+## plotting
+atus.all %>% 
+  filter(TRCHILDNUM > 0) %>% 
+  select(TESEX, CHILDCARE) %>% 
+  group_by(TESEX) %>% 
+  ggplot(aes(x=as.character(TESEX), y=CHILDCARE)) + 
+  geom_boxplot(aes(group=TESEX)) + 
+  scale_x_discrete(labels=c('Male', 'Female')) + 
+  labs(title='Average time spent on childcare by gender',
+       subtitle='\tWomen spend more time with children',
+       caption = paste0('p-value for Welch t-test: ', signif(sex.test$p.value, digits=3))) + 
+  xlab(label='Gender') + 
+  ylab(label='Time spent on childcare (min)')
+
+  
+  
 ```
 
 ### Regression Analysis
 
 ```{r reg-analysis}
 ## add your regression analysis code here
-reg_model <- lm()
+reg_model <- lm(CHILDCARE~PEMARITL + TEAGE + TESEX + TRCHILDNUM + TRDPFTPT,
+                data=atus.all %>% 
+                  filter(TRCHILDNUM >= 1))
 summary(reg_model)
 ```
 
@@ -99,48 +232,89 @@ summary(reg_model)
 
 ```{r activity-cats}
 atus.wide <- atus.all %>%
-    mutate(act01 = ,
-           act02 = ,
-           act03 = ,
-           act04 = ,
-           act05 = ,
-           act06 = ,
-           act07 = ,
-           act08 = ,
-           act09 = ,
-           act10 = ,
-           act11 = ,
-           act12 = ,
-           act13 = ,
-           act14 = ,
-           act15 = ,
-           act16 = ,
+    mutate(act01 = rowSums(.[, grep('t01', colnames(.))]),
+           act02 = rowSums(.[, grep('t02', colnames(.))]),
+           act03 = rowSums(.[, grep('t03', colnames(.))]),
+           act04 = rowSums(.[, grep('t04', colnames(.))]),
+           act05 = rowSums(.[, grep('t05', colnames(.))]),
+           act06 = rowSums(.[, grep('t06', colnames(.))]),
+           act07 = rowSums(.[, grep('t07', colnames(.))]),
+           act08 = rowSums(.[, grep('t08', colnames(.))]),
+           act09 = rowSums(.[, grep('t09', colnames(.))]),
+           act10 = rowSums(.[, grep('t10', colnames(.))]),
+           act11 = rowSums(.[, grep('t11', colnames(.))]),
+           act12 = rowSums(.[, grep('t12', colnames(.))]),
+           act13 = rowSums(.[, grep('t13', colnames(.))]),
+           act14 = rowSums(.[, grep('t14', colnames(.))]),
+           act15 = rowSums(.[, grep('t15', colnames(.))]),
+           act16 = rowSums(.[, grep('t16', colnames(.))]),
            # act17 = , there is no category 17 in the data
-           act18 = ) %>% 
+           act18 = rowSums(.[, grep('t18', colnames(.))])) %>% 
     select(TUCASEID, TEAGE, HEFAMINC, starts_with("act"))
 ```
 
 ```{r wide-to-long}
+## Activity will be name of column with acts and mins column with values (observations)
 atus.long <- atus.wide %>% 
-  # use code to convert the wide format to long.
+  reshape2::melt(variable.name='ACTIVITY', value.name='MINS', id.vars=c('TUCASEID', 'TEAGE', 'HEFAMINC'))
+
 ```
 
 ```{r age-activity}
 atus.long %>% 
     group_by(ACTIVITY, TEAGE) %>% 
     summarise(AVGMINS = mean(MINS)) %>% 
-    ggplot() +
+  ggplot(aes(x=TEAGE, y=AVGMINS)) + 
+  geom_bar(stat='identity') + 
+  facet_wrap(~ACTIVITY)
 ```
 
 ### Exploratory Analysis of Income and Activities
 
 ```{r activity-income}
-atus.long %>% 
+
+## expand in scale_y removed spacing between axis and bars
+## guide_colourbar allows for adjustment of bar size
+
+p1<-atus.long %>% 
+  filter(HEFAMINC > 0) %>% 
   group_by(ACTIVITY, HEFAMINC) %>% 
-  ## add the rest of the code here
+  arrange(HEFAMINC) %>% 
+  ggplot(aes(x=ACTIVITY, y=MINS, fill=HEFAMINC)) + 
+  geom_bar(position='fill', stat='identity') + 
+  coord_flip() + theme_classic() + 
+  scale_y_discrete(expand=c(0,0), breaks = 1:17, labels= act_labels) + 
+    labs(title="Income distributions in Americans' pastimes",
+       subtitle='This chart shows the income distribution of adult participants in different\npastimes.') + 
+  scale_fill_gradientn(colours=c('darkblue','steelblue3', 'deepskyblue3', 'darkslategray1','lightblue','goldenrod1', 'gold3', 'gold4', 'darkgoldenrod4'), 
+                       limits=c(1,16), 
+                       breaks=seq(1,16, by=3), 
+                       labels=c('<5k', '10k', '20k', '35k', '60k', '150k+'),
+                       guide='colourbar',
+                       na.value = 'green',
+                       name='Total population\n\nYearly household income') + 
+  guides(fill=guide_colorbar(barwidth = 19,
+                             barheight = 1)) + 
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = 'bottom', 
+    legend.title = element_text(size=7, vjust=0.8),
+    legend.text = element_text(size=7),
+    legend.title.align = 1,
+    plot.title = element_text(face='bold')
+  )
+p1
 ```
 
 
 ```{r save-plot}
 ## save the plot above
+ggsave(plot=p1, filename='activity-income.png',
+       path='final_project/figures/explanatory_figures')
 ```
